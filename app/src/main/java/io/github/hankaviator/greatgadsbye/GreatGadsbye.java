@@ -2,6 +2,7 @@ package io.github.hankaviator.greatgadsbye;
 
 import android.app.Activity;
 import android.content.Context;
+import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -13,6 +14,7 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.regex.Pattern;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -26,6 +28,8 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
     private static final String MAPS_PACKAGE = "com.google.android.apps.maps";
     private static final String TAG = "GreatGadsbye";
     private static final int MAX_ANCESTORS = 16;
+    private static final long[] STARTUP_SCAN_DELAYS_MS = {250L, 1_000L, 2_500L, 5_000L};
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private static final Set<String> SPONSORED_LABELS = labels(
             "sponsored", "sponsorisé", "sponsorisée", "gesponsert", "patrocinado",
@@ -33,9 +37,10 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
             "赞助内容", "贊助內容", "赞助", "贊助", "реклама", "sponsrad"
     );
 
-    private static final Set<Activity> OBSERVED_ACTIVITIES =
-            Collections.newSetFromMap(new WeakHashMap<>());
+    private static final WeakHashMap<Activity, ScanSchedule> OBSERVED_ACTIVITIES =
+            new WeakHashMap<>();
     private static final WeakHashMap<View, SavedState> HIDDEN_VIEWS = new WeakHashMap<>();
+    private static final SparseArray<String> RESOURCE_NAMES = new SparseArray<>();
     private static volatile boolean cachedEnabled = true;
     private static volatile boolean settingsInitialized;
     private static String activeFeature;
@@ -62,20 +67,33 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
             }
         });
 
+        hookTextChanges();
+        if (FeatureSettings.FEATURE_GMAIL.equals(activeFeature)) {
+            hookGmailViewInsertions();
+        } else {
+            hookContentDescriptionChanges();
+        }
+    }
+
+    private static void hookTextChanges() {
         XposedBridge.hookAllMethods(TextView.class, "setText", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 inspectChangedView((View) param.thisObject);
             }
         });
+    }
 
+    private static void hookContentDescriptionChanges() {
         XposedBridge.hookAllMethods(View.class, "setContentDescription", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 inspectChangedView((View) param.thisObject);
             }
         });
+    }
 
+    private static void hookGmailViewInsertions() {
         XposedBridge.hookAllMethods(ViewGroup.class, "addView", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
@@ -84,8 +102,7 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
                 }
                 ViewGroup parent = (ViewGroup) param.thisObject;
                 View child = (View) param.args[0];
-                if (FeatureSettings.FEATURE_GMAIL.equals(activeFeature)
-                        && isRecyclerView(parent)
+                if (isRecyclerView(parent)
                         && isFeatureEnabled(child.getContext())
                         && containsAdSignature(child)) {
                     hide(child);
@@ -107,20 +124,18 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
     private static void observe(Activity activity) {
         View root = activity.getWindow().getDecorView();
         synchronized (OBSERVED_ACTIVITIES) {
-            if (OBSERVED_ACTIVITIES.add(activity)) {
-                Runnable settledScan = () -> scan(root);
+            if (!OBSERVED_ACTIVITIES.containsKey(activity)) {
+                ScanSchedule schedule = new ScanSchedule(root);
+                OBSERVED_ACTIVITIES.put(activity, schedule);
                 root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-                    root.removeCallbacks(settledScan);
-                    root.postDelayed(settledScan, 300L);
+                    root.removeCallbacks(schedule.settledScan);
+                    root.postDelayed(schedule.settledScan, 300L);
                 });
+                schedule.postStartupScans();
                 XposedBridge.log(TAG + ": observing " + activity.getClass().getName());
             }
         }
         scan(root);
-        root.postDelayed(() -> scan(root), 250L);
-        root.postDelayed(() -> scan(root), 1_000L);
-        root.postDelayed(() -> scan(root), 2_500L);
-        root.postDelayed(() -> scan(root), 5_000L);
     }
 
     /** Returns true when a visibility change requires the current draw to be retried. */
@@ -169,7 +184,11 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
             return true;
         }
         if (FeatureSettings.FEATURE_MAPS.equals(activeFeature)) {
-            return false;
+            // Some first-party place promotions omit a Sponsored disclosure and
+            // expose only an offer CTA inside the bordered campaign card.
+            return (view instanceof TextView
+                    && isStandaloneMapOffer(((TextView) view).getText()))
+                    || isStandaloneMapOffer(view.getContentDescription());
         }
         String name = resourceName(view);
         return name.contains("sponsor") || name.contains("ad_badge")
@@ -177,16 +196,42 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
     }
 
     private static boolean isSponsoredText(CharSequence value) {
-        if (value == null || value.length() > 160) {
+        if (value == null || value.length() > 160 || !hasSponsoredInitial(value)) {
             return false;
         }
-        String normalized = normalize(value.toString());
+        String normalized = normalizeAndFold(value.toString());
         for (String label : SPONSORED_LABELS) {
             if (normalized.equals(label) || normalized.startsWith(label + ":")
                     || normalized.startsWith(label + ",")
                     || normalized.startsWith(label + " ·")
                     || normalized.startsWith(label + " -")) {
                 return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasSponsoredInitial(CharSequence value) {
+        for (int i = 0; i < value.length(); i++) {
+            char initial = value.charAt(i);
+            if (Character.isWhitespace(initial)) {
+                continue;
+            }
+            switch (Character.toLowerCase(initial)) {
+                case 's':
+                case 'g':
+                case 'p':
+                case '\u30b9':
+                case '\uc2a4':
+                case '\u8d5e':
+                case '\u8d0a':
+                case '\u0440':
+                case '\uff53':
+                case '\uff47':
+                case '\uff50':
+                    return true;
+                default:
+                    return false;
             }
         }
         return false;
@@ -220,7 +265,22 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
         for (int depth = 0; parent instanceof ViewGroup && depth < MAX_ANCESTORS; depth++) {
             ViewGroup group = (ViewGroup) parent;
             String name = resourceName(group);
-            if ("business_place_card".equals(name) || isRecyclerView(group)) {
+            if ("business_place_card".equals(name)) {
+                if (containsMapAdAction(child)) {
+                    return child;
+                }
+                // Promoted map pins put the sponsorship disclosure in the normal
+                // place header and the actual campaign creative in a sibling.
+                // Preserve the useful header and remove only that CTA card.
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    View sibling = group.getChildAt(i);
+                    if (sibling != child && containsMapAdAction(sibling)) {
+                        return sibling;
+                    }
+                }
+                return fallback;
+            }
+            if (isRecyclerView(group)) {
                 return child;
             }
             if (isSponsoredText(group.getContentDescription())) {
@@ -230,6 +290,40 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
             parent = group.getParent();
         }
         return fallback;
+    }
+
+    private static boolean containsMapAdAction(View view) {
+        if (isMapAdAction(view.getContentDescription())
+                || (view instanceof TextView && isMapAdAction(((TextView) view).getText()))) {
+            return true;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                if (containsMapAdAction(group.getChildAt(i))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isMapAdAction(CharSequence value) {
+        if (value == null || value.length() > 160) {
+            return false;
+        }
+        String normalized = normalizeAndFold(value.toString());
+        return normalized.equals("visit site") || normalized.endsWith(", visit site")
+                || normalized.equals("book now") || normalized.endsWith(", book now")
+                || normalized.equals("view offer") || normalized.endsWith(", view offer");
+    }
+
+    private static boolean isStandaloneMapOffer(CharSequence value) {
+        if (value == null || value.length() > 160) {
+            return false;
+        }
+        String normalized = normalizeAndFold(value.toString());
+        return normalized.equals("view offer") || normalized.endsWith(", view offer");
     }
 
     private static boolean isRecyclerView(View view) {
@@ -264,15 +358,26 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
     }
 
     private static String resourceName(View view) {
-        if (view.getId() == View.NO_ID) {
+        int id = view.getId();
+        if (id == View.NO_ID) {
             return "";
         }
+        synchronized (RESOURCE_NAMES) {
+            int index = RESOURCE_NAMES.indexOfKey(id);
+            if (index >= 0) {
+                return RESOURCE_NAMES.valueAt(index);
+            }
+        }
+        String name;
         try {
-            return view.getResources().getResourceEntryName(view.getId())
-                    .toLowerCase(Locale.ROOT);
+            name = view.getResources().getResourceEntryName(id).toLowerCase(Locale.ROOT);
         } catch (RuntimeException ignored) {
-            return "";
+            name = "";
         }
+        synchronized (RESOURCE_NAMES) {
+            RESOURCE_NAMES.put(id, name);
+        }
+        return name;
     }
 
     private static boolean isFeatureEnabled(Context context) {
@@ -359,15 +464,48 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
 
     private static String normalize(String value) {
         return Normalizer.normalize(value, Normalizer.Form.NFKC)
-                .trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+                .trim();
+    }
+
+    private static String normalizeAndFold(String value) {
+        return WHITESPACE.matcher(normalize(value)).replaceAll(" ").toLowerCase(Locale.ROOT);
     }
 
     private static Set<String> labels(String... values) {
         Set<String> result = new HashSet<>();
         for (String value : values) {
-            result.add(normalize(value));
+            result.add(normalizeAndFold(value));
         }
         return Collections.unmodifiableSet(result);
+    }
+
+    private static final class ScanSchedule {
+        final View root;
+        final Runnable settledScan;
+        final Runnable[] startupScans = new Runnable[STARTUP_SCAN_DELAYS_MS.length];
+
+        ScanSchedule(View root) {
+            this.root = root;
+            settledScan = () -> {
+                cancelStartupScans();
+                scan(root);
+            };
+            for (int i = 0; i < startupScans.length; i++) {
+                startupScans[i] = () -> scan(root);
+            }
+        }
+
+        void postStartupScans() {
+            for (int i = 0; i < startupScans.length; i++) {
+                root.postDelayed(startupScans[i], STARTUP_SCAN_DELAYS_MS[i]);
+            }
+        }
+
+        void cancelStartupScans() {
+            for (Runnable scan : startupScans) {
+                root.removeCallbacks(scan);
+            }
+        }
     }
 
     private static final class SavedState {

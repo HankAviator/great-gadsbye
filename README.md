@@ -30,6 +30,7 @@ The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 4. Open Great Gadsbye and choose which removers to enable.
 5. Force-stop and reopen the affected Google apps.
 
+
 ```powershell
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am force-stop com.google.android.gm
@@ -41,6 +42,7 @@ booleans to the hooked processes; no sensitive Android platform permissions are 
 
 ## Compatibility
 
-The Google Maps matcher was verified against Maps `26.37.05.977222275`, including the rendered
-`Sponsored, Agoda, …, Book now` offer card. Google app updates can change their UI. If an ad stops
-being removed, capture an LSPosed log and a UI hierarchy while it is visible.
+The Google Maps matcher was verified against Maps `26.37.05.977222275`, including rendered
+`Sponsored, Agoda, …, Book now` cards and unlabeled place promotions ending in `View Offer`.
+Google app updates can change their UI. If an ad stops being removed, capture an LSPosed log and a
+UI hierarchy while it is visible.
