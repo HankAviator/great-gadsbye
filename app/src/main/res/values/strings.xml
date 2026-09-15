@@ -1,19 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Great Gadsbye</string>
-    <string name="module_description">Hides sponsored content in Gmail and Google Maps.</string>
+    <string name="module_description">Controls sponsored content and screen rotation in Gmail and Google Maps.</string>
     <string name="hero_title">A quieter Google</string>
-    <string name="hero_body">Choose where sponsored content should disappear. Everything stays on your device.</string>
+    <string name="hero_body">Choose what changes in Gmail and Google Maps. Everything stays on your device.</string>
     <string name="gmail_title">Gmail</string>
     <string name="gmail_summary">Hide sponsored rows in Promotions and Social</string>
     <string name="gmail_toggle_description">Toggle Gmail ad removal</string>
     <string name="maps_title">Google Maps</string>
     <string name="maps_summary">Hide sponsored offers in place pages</string>
     <string name="maps_toggle_description">Toggle Google Maps ad removal</string>
+    <string name="maps_rotation_title">Maps rotation</string>
+    <string name="maps_rotation_summary">Prevent upside-down portrait while keeping normal landscape rotation</string>
+    <string name="maps_rotation_toggle_description">Toggle upside-down Maps rotation prevention</string>
     <string name="restart_note">After changing a setting, force-stop and reopen the affected Google app. The module must also be enabled in LSPosed.</string>
     <string-array name="xposed_scope">
         <item>com.google.android.gm</item>
         <item>com.google.android.apps.maps</item>
     </string-array>
 </resources>
-

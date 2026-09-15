@@ -9,6 +9,7 @@ final class FeatureSettings {
     static final String PREFERENCES = "features";
     static final String FEATURE_GMAIL = "gmail";
     static final String FEATURE_MAPS = "maps";
+    static final String FEATURE_MAPS_NO_REVERSE_PORTRAIT = "maps_no_reverse_portrait";
 
     private FeatureSettings() {}
 
@@ -36,6 +37,10 @@ final class FeatureSettings {
         }
         if (!preferences.contains(FEATURE_MAPS)) {
             editor.putBoolean(FEATURE_MAPS, true);
+            changed = true;
+        }
+        if (!preferences.contains(FEATURE_MAPS_NO_REVERSE_PORTRAIT)) {
+            editor.putBoolean(FEATURE_MAPS_NO_REVERSE_PORTRAIT, true);
             changed = true;
         }
         if (changed) {

@@ -2,6 +2,8 @@ package io.github.hankaviator.greatgadsbye;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.pm.ActivityInfo;
+import android.provider.Settings;
 import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewGroup;
@@ -26,6 +28,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public final class GreatGadsbye implements IXposedHookLoadPackage {
     private static final String GMAIL_PACKAGE = "com.google.android.gm";
     private static final String MAPS_PACKAGE = "com.google.android.apps.maps";
+    private static final String MAPS_MAIN_ACTIVITY = "com.google.android.maps.MapsActivity";
     private static final String TAG = "GreatGadsbye";
     private static final int MAX_ANCESTORS = 16;
     private static final long[] STARTUP_SCAN_DELAYS_MS = {250L, 1_000L, 2_500L, 5_000L};
@@ -42,6 +45,7 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
     private static final WeakHashMap<View, SavedState> HIDDEN_VIEWS = new WeakHashMap<>();
     private static final SparseArray<String> RESOURCE_NAMES = new SparseArray<>();
     private static volatile boolean cachedEnabled = true;
+    private static volatile boolean cachedMapsRotationProtectionEnabled = true;
     private static volatile boolean settingsInitialized;
     private static String activeFeature;
 
@@ -63,7 +67,9 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 settingsInitialized = false;
-                observe((Activity) param.thisObject);
+                Activity activity = (Activity) param.thisObject;
+                observe(activity);
+                applyMapsRotationPolicy(activity);
             }
         });
 
@@ -72,7 +78,78 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
             hookGmailViewInsertions();
         } else {
             hookContentDescriptionChanges();
+            hookMapsOrientationRequests();
         }
+    }
+
+    private static void hookMapsOrientationRequests() {
+        XposedBridge.hookAllMethods(Activity.class, "setRequestedOrientation",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        Activity activity = (Activity) param.thisObject;
+                        if (!isMapsMainActivity(activity)
+                                || !isMapsRotationProtectionEnabled(activity)
+                                || param.args.length == 0
+                                || !(param.args[0] instanceof Integer)) {
+                            return;
+                        }
+                        int requested = (Integer) param.args[0];
+                        param.args[0] = orientationWithoutReversePortrait(activity, requested);
+                    }
+                });
+    }
+
+    private static void applyMapsRotationPolicy(Activity activity) {
+        if (!isMapsMainActivity(activity) || !isMapsRotationProtectionEnabled(activity)) {
+            return;
+        }
+        int desired = isSystemAutoRotateEnabled(activity)
+                ? ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                : ActivityInfo.SCREEN_ORIENTATION_USER;
+        if (activity.getRequestedOrientation() != desired) {
+            activity.setRequestedOrientation(desired);
+            XposedBridge.log(TAG + ": Maps orientation policy applied: " + desired);
+        }
+    }
+
+    private static int orientationWithoutReversePortrait(Activity activity, int requested) {
+        if (!isSystemAutoRotateEnabled(activity)) {
+            switch (requested) {
+                case ActivityInfo.SCREEN_ORIENTATION_SENSOR:
+                case ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR:
+                case ActivityInfo.SCREEN_ORIENTATION_FULL_USER:
+                case ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT:
+                case ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:
+                case ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT:
+                    return ActivityInfo.SCREEN_ORIENTATION_USER;
+                default:
+                    return requested;
+            }
+        }
+        switch (requested) {
+            case ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED:
+            case ActivityInfo.SCREEN_ORIENTATION_USER:
+            case ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR:
+            case ActivityInfo.SCREEN_ORIENTATION_FULL_USER:
+                return ActivityInfo.SCREEN_ORIENTATION_SENSOR;
+            case ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT:
+                return ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+            default:
+                return requested;
+        }
+    }
+
+    private static boolean isMapsMainActivity(Activity activity) {
+        return FeatureSettings.FEATURE_MAPS.equals(activeFeature)
+                && MAPS_MAIN_ACTIVITY.equals(activity.getClass().getName());
+    }
+
+    private static boolean isSystemAutoRotateEnabled(Context context) {
+        return Settings.System.getInt(context.getContentResolver(),
+                Settings.System.ACCELEROMETER_ROTATION, 0) == 1;
     }
 
     private static void hookTextChanges() {
@@ -381,19 +458,31 @@ public final class GreatGadsbye implements IXposedHookLoadPackage {
     }
 
     private static boolean isFeatureEnabled(Context context) {
+        loadSettings();
+        return cachedEnabled;
+    }
+
+    private static boolean isMapsRotationProtectionEnabled(Context context) {
+        loadSettings();
+        return cachedMapsRotationProtectionEnabled;
+    }
+
+    private static void loadSettings() {
         if (settingsInitialized) {
-            return cachedEnabled;
+            return;
         }
         try {
             XSharedPreferences preferences = new XSharedPreferences(
                     FeatureSettings.MODULE_PACKAGE, FeatureSettings.PREFERENCES);
             cachedEnabled = preferences.getBoolean(activeFeature, true);
+            cachedMapsRotationProtectionEnabled = preferences.getBoolean(
+                    FeatureSettings.FEATURE_MAPS_NO_REVERSE_PORTRAIT, true);
         } catch (RuntimeException error) {
             cachedEnabled = true;
+            cachedMapsRotationProtectionEnabled = true;
             XposedBridge.log(TAG + ": could not read settings; defaulting enabled: " + error);
         }
         settingsInitialized = true;
-        return cachedEnabled;
     }
 
     private static boolean hide(View view) {

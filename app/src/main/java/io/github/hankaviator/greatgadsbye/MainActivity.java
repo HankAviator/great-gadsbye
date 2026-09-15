@@ -20,6 +20,8 @@ public final class MainActivity extends AppCompatActivity {
         FeatureSettings.ensureDefaults(this);
         bind(R.id.gmail_switch, FeatureSettings.FEATURE_GMAIL);
         bind(R.id.maps_switch, FeatureSettings.FEATURE_MAPS);
+        bind(R.id.maps_rotation_switch,
+                FeatureSettings.FEATURE_MAPS_NO_REVERSE_PORTRAIT);
     }
 
     private static void applySystemBarInsets(View root) {

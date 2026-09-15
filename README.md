@@ -6,6 +6,7 @@ An LSPosed/Xposed module that removes sponsored content from Google Android apps
 
 - **Gmail:** hides sponsored conversation rows in the Promotions and Social inboxes.
 - **Google Maps:** hides sponsored offer cards in place pages.
+- **Maps rotation:** prevents upside-down portrait while retaining normal portrait and landscape rotation.
 - **Per-app controls:** a Material Design 3 settings app lets each remover be enabled independently.
 - **System styling:** the settings app follows Android 12+ wallpaper-based dynamic color.
 

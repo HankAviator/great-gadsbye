@@ -3,7 +3,8 @@
     <color name="seed">#476810</color>
     <color name="gmail_red">#B3261E</color>
     <color name="maps_blue">#0B57D0</color>
+    <color name="rotation_green">#386A20</color>
     <color name="icon_gmail_background">#FFDAD6</color>
     <color name="icon_maps_background">#D7E3FF</color>
+    <color name="icon_rotation_background">#B8F397</color>
 </resources>
-
